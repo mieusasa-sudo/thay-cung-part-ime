@@ -44,10 +44,10 @@ h1.title{font-size:34px;text-align:center;color:var(--gold);text-shadow:0 0 24px
 .badge{display:inline-block;padding:3px 12px;border-radius:999px;font-size:13px;font-weight:700;background:rgba(245,197,66,.15);color:var(--gold);border:1px solid rgba(245,197,66,.5)}
 .note{font-size:13px;color:var(--dim);text-align:center;margin-top:8px;line-height:1.5}
 /* ---------- màn chính ---------- */
-#screen-home{container-type:size;background-color:#060303;background-image:url(assets/home-bg.jpg);background-size:cover;background-position:top center;background-repeat:no-repeat}
-#screen-home::before{display:none}
-.home-ui{position:absolute;left:50%;top:0;transform:translateX(-50%);width:100%;height:100%;
-  width:max(100%,55.81cqh);height:max(100%,179.17cqw);z-index:1;font-size:8px;font-size:max(1cqh,1.7917cqw)}
+#screen-home{container-type:size;background-color:#060303}
+#screen-home::before{content:"";position:absolute;inset:0;z-index:0;background-image:url(assets/home-bg.jpg);background-size:cover;background-position:center;filter:blur(22px) brightness(.5);-webkit-filter:blur(22px) brightness(.5);transform:scale(1.15)}
+.home-ui{position:absolute;left:50%;bottom:0;transform:translateX(-50%);width:100%;height:179.17cqw;
+  z-index:1;font-size:8px;font-size:1.7917cqw;background-image:url(assets/home-bg.jpg);background-size:cover;background-position:center;background-repeat:no-repeat}
 #home-mascot{display:none}
 #screen-home .title,#screen-home .subtitle{display:none}
 .merit-box{position:absolute;inset:0;margin:0;padding:0;background:none;border:none;border-radius:0;box-shadow:none;pointer-events:none}
@@ -3867,10 +3867,23 @@ window.Ghost3D = (function(){
 
   var EMBEDDED_MODELS = {};
   function b64ToBuf(b64){ var bin=atob(b64); var n=bin.length; var u=new Uint8Array(n); for(var i=0;i<n;i++) u[i]=bin.charCodeAt(i); return u.buffer; }
+  /* race với timeout: tránh kẹt ở trạng thái "đang tải" mãi khi mạng treo (điện thoại hay gặp) */
+  function withTimeout(promise, ms){
+    var to;
+    var timeout = new Promise(function(_, rej){
+      to = setTimeout(function(){ rej(new Error("Ghost3D load timeout")); }, ms);
+    });
+    return Promise.race([promise, timeout]).then(
+      function(v){ clearTimeout(to); return v; },
+      function(e){ clearTimeout(to); throw e; });
+  }
   function ensureModel(id){
     var e = modelCache.get(id);
-    if (e) return e.promise;
-    var entry = {status: "loading", root: null, promise: null};
+    if (e){
+      // đã lỗi trước đó: cho thử lại sau 20s, tối đa 3 lần/phiên (mạng đt hay đứt quãng)
+      if (e.status !== "missing" || e.tries >= 3 || Date.now() - e.failAt < 20000) return e.promise;
+    }
+    var entry = {status: "loading", root: null, promise: null, tries: e ? e.tries + 1 : 0, failAt: 0};
     var loadBuf;
     if (typeof EMBEDDED_MODELS !== "undefined" && EMBEDDED_MODELS[id]) {
       try { loadBuf = Promise.resolve(b64ToBuf(EMBEDDED_MODELS[id])); }
@@ -3879,7 +3892,8 @@ window.Ghost3D = (function(){
       loadBuf = fetch("assets/models/" + id + ".glb")
         .then(function(r){ if (!r.ok) throw new Error("missing"); return r.arrayBuffer(); });
     }
-    entry.promise = loadBuf
+    // mạng điện thoại hay kẹt: treo quá 45s coi như lỗi để còn thử lại, không kẹt "đang tải" mãi
+    entry.promise = withTimeout(loadBuf, 45000)
       .then(function(buf){
         return new Promise(function(res, rej){
           new GLTFLoaderCls().parse(buf, "", res, rej);
@@ -3909,7 +3923,7 @@ window.Ghost3D = (function(){
         entry.root = normalize(gltf.scene);
         return entry;
       })
-      .catch(function(){ entry.status = "missing"; entry.root = null; return entry; });
+      .catch(function(){ entry.status = "missing"; entry.root = null; entry.failAt = Date.now(); return entry; });
     modelCache.set(id, entry);
     return entry.promise;
   }
@@ -3928,6 +3942,8 @@ window.Ghost3D = (function(){
       ov.placements.push({id: id, x: x, y: y, size: size, t: t});
       var e = modelCache.get(id);
       if (!e){ ensureModel(id); return false; }
+      // model từng tải lỗi: để ensureModel tự quyết có thử lại không
+      if (e.status === "missing") ensureModel(id);
       return e.status === "ready";
     },
     /* gọi cuối mỗi frame: đồng bộ scene + render */
@@ -3967,6 +3983,9 @@ window.Ghost3D = (function(){
       for (i = placements.length; i < ov.holders.length; i++) ov.holders[i].holder.visible = false;
       ov.renderer.render(ov.scene, ov.camera);
     },
+    /* bắt đầu tải trước model của 1 loài — gọi ngay khi ma spawn,
+       kẻo model lớn tải chưa kịp lúc người chơi lia camera tới thì chỉ thấy hình 2D */
+    preload: function(id){ if (booted) ensureModel(id); },
     /* xoá sạch overlay khi rời màn hình */
     clear: function(which){
       var ov = overlays[which];
@@ -4761,6 +4780,8 @@ function spawnOne(awayFrom){
     mood: GHOST_MOODS[Math.floor(Math.random()*GHOST_MOODS.length)],
     tuoi: ageRange[0]+Math.floor(Math.random()*(ageRange[1]-ageRange[0]+1)),
     phase:Math.random()*7, caught:false, spawnT:Date.now() });
+  // tải trước model 3D ngay khi ma xuất hiện, không đợi tới lúc lia camera tới mới tải
+  if(sp.model3d && window.Ghost3D && Ghost3D.preload) Ghost3D.preload(sp.id);
 }
 function doSpawn(){
   ghosts=[];
