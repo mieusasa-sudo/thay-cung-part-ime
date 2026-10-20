@@ -3877,6 +3877,8 @@ window.Ghost3D = (function(){
       function(v){ clearTimeout(to); return v; },
       function(e){ clearTimeout(to); throw e; });
   }
+  // id loài -> tên file thật trên repo (chỉ khác khi tên file dài hơn id)
+  var FILE_ALIAS = {"ma-lai": "ma-lai-rut-ruot"};
   function ensureModel(id){
     var e = modelCache.get(id);
     if (e){
@@ -3889,7 +3891,7 @@ window.Ghost3D = (function(){
       try { loadBuf = Promise.resolve(b64ToBuf(EMBEDDED_MODELS[id])); }
       catch (err) { loadBuf = Promise.reject(err); }
     } else {
-      loadBuf = fetch("assets/models/" + id + ".glb")
+      loadBuf = fetch("assets/models/" + (FILE_ALIAS[id] || id) + ".glb")
         .then(function(r){ if (!r.ok) throw new Error("missing"); return r.arrayBuffer(); });
     }
     // mạng điện thoại hay kẹt: treo quá 45s coi như lỗi để còn thử lại, không kẹt "đang tải" mãi
